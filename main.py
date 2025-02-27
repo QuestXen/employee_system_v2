@@ -1408,4 +1408,362 @@ class EmployeeManagementSystem:
         self.header_title.config(text="Urlaubsverwaltung")
         self.highlight_menu_button("Urlaub")
         
+        # Toolbar erstellen
+        toolbar = tk.Frame(self.content_frame, bg=LIGHT_COLOR)
+        toolbar.pack(fill=tk.X, pady=(0, 10))
         
+        # Filter für Jahr und Monat
+        filter_frame = tk.Frame(toolbar, bg=LIGHT_COLOR)
+        filter_frame.pack(side=tk.LEFT)
+        
+        year_label = tk.Label(filter_frame, text="Jahr:", bg=LIGHT_COLOR)
+        year_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        current_year = datetime.datetime.now().year
+        years = list(range(current_year - 2, current_year + 2))
+        self.year_var = tk.StringVar(value=str(current_year))
+        year_menu = ttk.Combobox(filter_frame, textvariable=self.year_var, values=years, state="readonly", width=6)
+        year_menu.pack(side=tk.LEFT, padx=(0, 20))
+        
+        month_label = tk.Label(filter_frame, text="Monat:", bg=LIGHT_COLOR)
+        month_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        months = list(calendar.month_name)[1:]
+        self.month_var = tk.StringVar(value=calendar.month_name[datetime.datetime.now().month])
+        month_menu = ttk.Combobox(filter_frame, textvariable=self.month_var, values=months, state="readonly", width=15)
+        month_menu.pack(side=tk.LEFT)
+        
+        # Buttons für Aktionen
+        button_frame = tk.Frame(toolbar, bg=LIGHT_COLOR)
+        button_frame.pack(side=tk.RIGHT)
+        
+        new_vacation_button = tk.Button(
+            button_frame,
+            text="Neuer Urlaubsantrag",
+            bg=THEME_COLOR,
+            fg="white",
+            padx=10,
+            pady=2,
+            relief=tk.FLAT,
+            command=self.new_vacation_request
+        )
+        new_vacation_button.pack(side=tk.RIGHT, padx=5)
+        
+        # Tabelle für Urlaubsanträge
+        table_frame = tk.Frame(self.content_frame, bg="white")
+        table_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Scrollbars
+        scrollbar_y = tk.Scrollbar(table_frame)
+        scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        scrollbar_x = tk.Scrollbar(table_frame, orient=tk.HORIZONTAL)
+        scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Treeview für Urlaubsanträge
+        columns = ("id", "employee", "start_date", "end_date", "days", "status", "approved_by", "created_at")
+        self.vacation_tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            yscrollcommand=scrollbar_y.set,
+            xscrollcommand=scrollbar_x.set
+        )
+        
+        # Spalten konfigurieren
+        self.vacation_tree.heading("id", text="ID")
+        self.vacation_tree.heading("employee", text="Mitarbeiter")
+        self.vacation_tree.heading("start_date", text="Von")
+        self.vacation_tree.heading("end_date", text="Bis")
+        self.vacation_tree.heading("days", text="Tage")
+        self.vacation_tree.heading("status", text="Status")
+        self.vacation_tree.heading("approved_by", text="Genehmigt von")
+        self.vacation_tree.heading("created_at", text="Erstellt am")
+        
+        self.vacation_tree.column("id", width=50, anchor=tk.CENTER)
+        self.vacation_tree.column("employee", width=200)
+        self.vacation_tree.column("start_date", width=100, anchor=tk.CENTER)
+        self.vacation_tree.column("end_date", width=100, anchor=tk.CENTER)
+        self.vacation_tree.column("days", width=60, anchor=tk.CENTER)
+        self.vacation_tree.column("status", width=100, anchor=tk.CENTER)
+        self.vacation_tree.column("approved_by", width=150)
+        self.vacation_tree.column("created_at", width=150, anchor=tk.CENTER)
+        
+        self.vacation_tree.pack(fill=tk.BOTH, expand=True)
+        
+        # Scrollbars mit Treeview verbinden
+        scrollbar_y.config(command=self.vacation_tree.yview)
+        scrollbar_x.config(command=self.vacation_tree.xview)
+        
+        # Kontextmenü für Urlaubsanträge
+        self.vacation_context_menu = tk.Menu(self.vacation_tree, tearoff=0)
+        self.vacation_context_menu.add_command(label="Details anzeigen", command=self.view_vacation)
+        self.vacation_context_menu.add_command(label="Genehmigen", command=lambda: self.change_vacation_status("Genehmigt"))
+        self.vacation_context_menu.add_command(label="Ablehnen", command=lambda: self.change_vacation_status("Abgelehnt"))
+        
+        self.vacation_tree.bind("<Button-3>", self.show_vacation_context_menu)
+        self.vacation_tree.bind("<Double-1>", lambda event: self.view_vacation())
+        
+        # Event-Handler für Filter
+        self.year_var.trace_add("write", lambda *args: self.load_vacation_data())
+        self.month_var.trace_add("write", lambda *args: self.load_vacation_data())
+        
+        # Daten laden
+        self.load_vacation_data()
+        self.update_status("Urlaubsverwaltung geladen")
+
+    def show_vacation_context_menu(self, event):
+        try:
+            iid = self.vacation_tree.identify_row(event.y)
+            if iid:
+                self.vacation_tree.selection_set(iid)
+                self.vacation_context_menu.post(event.x_root, event.y_root)
+        except:
+            pass
+
+    def load_vacation_data(self):
+        # Bestehende Einträge löschen
+        for item in self.vacation_tree.get_children():
+            self.vacation_tree.delete(item)
+        
+        # Verbindung zur Datenbank
+        conn = sqlite3.connect(DATABASE_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Ausgewähltes Jahr und Monat
+        selected_year = int(self.year_var.get())
+        selected_month = list(calendar.month_name).index(self.month_var.get())
+        
+        # SQL-Abfrage für Urlaubsanträge des ausgewählten Monats
+        cursor.execute("""
+            SELECT v.*, e.first_name, e.last_name, u.username as approver_name
+            FROM vacation v
+            JOIN employees e ON v.employee_id = e.id
+            LEFT JOIN users u ON v.approved_by = u.id
+            WHERE strftime('%Y', v.start_date) = ?
+            AND strftime('%m', v.start_date) = ?
+            ORDER BY v.start_date DESC
+        """, (str(selected_year), f"{selected_month:02d}"))
+        
+        for row in cursor.fetchall():
+            self.vacation_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    row['id'],
+                    f"{row['last_name']}, {row['first_name']}",
+                    format_date(row['start_date']),
+                    format_date(row['end_date']),
+                    row['days'],
+                    row['status'],
+                    row['approver_name'] if row['approver_name'] else "-",
+                    format_date(row['created_at'], format_from="%Y-%m-%d %H:%M:%S", format_to="%d.%m.%Y %H:%M")
+                )
+            )
+        
+        conn.close()
+
+    def new_vacation_request(self):
+        VacationDialog(self.root, None, self.load_vacation_data)
+
+    def view_vacation(self):
+        selected_item = self.vacation_tree.selection()
+        if not selected_item:
+            messagebox.showinfo("Information", "Bitte wählen Sie einen Urlaubsantrag aus.")
+            return
+        
+        vacation_id = self.vacation_tree.item(selected_item[0], "values")[0]
+        VacationDetailDialog(self.root, vacation_id, self.load_vacation_data)
+
+    def change_vacation_status(self, new_status):
+        selected_item = self.vacation_tree.selection()
+        if not selected_item:
+            messagebox.showinfo("Information", "Bitte wählen Sie einen Urlaubsantrag aus.")
+            return
+        
+        vacation_id = self.vacation_tree.item(selected_item[0], "values")[0]
+        current_status = self.vacation_tree.item(selected_item[0], "values")[5]
+        
+        if current_status == new_status:
+            messagebox.showinfo("Information", f"Der Urlaubsantrag hat bereits den Status '{new_status}'.")
+            return
+        
+        if messagebox.askyesno("Status ändern", f"Möchten Sie den Status des Urlaubsantrags zu '{new_status}' ändern?"):
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            
+            try:
+                current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute("""
+                    UPDATE vacation 
+                    SET status = ?, approved_by = ?, approved_date = ?
+                    WHERE id = ?
+                """, (new_status, self.user['id'], current_time, vacation_id))
+                
+                conn.commit()
+                self.load_vacation_data()
+                self.update_status(f"Urlaubsantrag erfolgreich {new_status.lower()}")
+                
+                logger.info(f"Urlaubsantrag Status geändert: ID {vacation_id}, neuer Status: {new_status}")
+            except Exception as e:
+                conn.rollback()
+                messagebox.showerror("Fehler", f"Fehler beim Ändern des Urlaubsstatus: {str(e)}")
+                logger.error(f"Fehler beim Ändern des Urlaubsstatus: {e}")
+            finally:
+                conn.close()
+
+    def show_sick_leave(self):
+        self.clear_content()
+        self.header_title.config(text="Krankschreibungen")
+        self.highlight_menu_button("Krankschreibungen")
+        
+        # Toolbar erstellen
+        toolbar = tk.Frame(self.content_frame, bg=LIGHT_COLOR)
+        toolbar.pack(fill=tk.X, pady=(0, 10))
+        
+        # Filter für Jahr und Monat
+        filter_frame = tk.Frame(toolbar, bg=LIGHT_COLOR)
+        filter_frame.pack(side=tk.LEFT)
+        
+        year_label = tk.Label(filter_frame, text="Jahr:", bg=LIGHT_COLOR)
+        year_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        current_year = datetime.datetime.now().year
+        years = list(range(current_year - 2, current_year + 2))
+        self.sick_year_var = tk.StringVar(value=str(current_year))
+        year_menu = ttk.Combobox(filter_frame, textvariable=self.sick_year_var, values=years, state="readonly", width=6)
+        year_menu.pack(side=tk.LEFT, padx=(0, 20))
+        
+        month_label = tk.Label(filter_frame, text="Monat:", bg=LIGHT_COLOR)
+        month_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        months = list(calendar.month_name)[1:]
+        self.sick_month_var = tk.StringVar(value=calendar.month_name[datetime.datetime.now().month])
+        month_menu = ttk.Combobox(filter_frame, textvariable=self.sick_month_var, values=months, state="readonly", width=15)
+        month_menu.pack(side=tk.LEFT)
+        
+        # Button für neue Krankmeldung
+        button_frame = tk.Frame(toolbar, bg=LIGHT_COLOR)
+        button_frame.pack(side=tk.RIGHT)
+        
+        new_sick_leave_button = tk.Button(
+            button_frame,
+            text="Neue Krankmeldung",
+            bg=THEME_COLOR,
+            fg="white",
+            padx=10,
+            pady=2,
+            relief=tk.FLAT,
+            command=lambda: self.report_sick_leave()
+        )
+        new_sick_leave_button.pack(side=tk.RIGHT, padx=5)
+        
+        # Tabelle für Krankmeldungen
+        table_frame = tk.Frame(self.content_frame, bg="white")
+        table_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Scrollbars
+        scrollbar_y = tk.Scrollbar(table_frame)
+        scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        scrollbar_x = tk.Scrollbar(table_frame, orient=tk.HORIZONTAL)
+        scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Treeview für Krankmeldungen
+        columns = ("id", "employee", "start_date", "end_date", "days", "certificate", "created_at")
+        self.sick_leave_tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            yscrollcommand=scrollbar_y.set,
+            xscrollcommand=scrollbar_x.set
+        )
+        
+        # Spalten konfigurieren
+        self.sick_leave_tree.heading("id", text="ID")
+        self.sick_leave_tree.heading("employee", text="Mitarbeiter")
+        self.sick_leave_tree.heading("start_date", text="Von")
+        self.sick_leave_tree.heading("end_date", text="Bis")
+        self.sick_leave_tree.heading("days", text="Tage")
+        self.sick_leave_tree.heading("certificate", text="Attest")
+        self.sick_leave_tree.heading("created_at", text="Erstellt am")
+        
+        self.sick_leave_tree.column("id", width=50, anchor=tk.CENTER)
+        self.sick_leave_tree.column("employee", width=200)
+        self.sick_leave_tree.column("start_date", width=100, anchor=tk.CENTER)
+        self.sick_leave_tree.column("end_date", width=100, anchor=tk.CENTER)
+        self.sick_leave_tree.column("days", width=60, anchor=tk.CENTER)
+        self.sick_leave_tree.column("certificate", width=80, anchor=tk.CENTER)
+        self.sick_leave_tree.column("created_at", width=150, anchor=tk.CENTER)
+        
+        self.sick_leave_tree.pack(fill=tk.BOTH, expand=True)
+        
+        # Scrollbars mit Treeview verbinden
+        scrollbar_y.config(command=self.sick_leave_tree.yview)
+        scrollbar_x.config(command=self.sick_leave_tree.xview)
+        
+        # Event-Handler für Filter
+        self.sick_year_var.trace_add("write", lambda *args: self.load_sick_leave_data())
+        self.sick_month_var.trace_add("write", lambda *args: self.load_sick_leave_data())
+        
+        # Daten laden
+        self.load_sick_leave_data()
+        self.update_status("Krankschreibungen geladen")
+
+    def load_sick_leave_data(self):
+        # Bestehende Einträge löschen
+        for item in self.sick_leave_tree.get_children():
+            self.sick_leave_tree.delete(item)
+        
+        # Verbindung zur Datenbank
+        conn = sqlite3.connect(DATABASE_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Ausgewähltes Jahr und Monat
+        selected_year = int(self.sick_year_var.get())
+        selected_month = list(calendar.month_name).index(self.sick_month_var.get())
+        
+        # SQL-Abfrage für Krankmeldungen des ausgewählten Monats
+        cursor.execute("""
+            SELECT s.*, e.first_name, e.last_name
+            FROM sick_leave s
+            JOIN employees e ON s.employee_id = e.id
+            WHERE strftime('%Y', s.start_date) = ?
+            AND strftime('%m', s.start_date) = ?
+            ORDER BY s.start_date DESC
+        """, (str(selected_year), f"{selected_month:02d}"))
+        
+        for row in cursor.fetchall():
+            self.sick_leave_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    row['id'],
+                    f"{row['last_name']}, {row['first_name']}",
+                    format_date(row['start_date']),
+                    format_date(row['end_date']),
+                    row['days'],
+                    "Ja" if row['medical_certificate'] else "Nein",
+                    format_date(row['created_at'], format_from="%Y-%m-%d %H:%M:%S", format_to="%d.%m.%Y %H:%M")
+                )
+            )
+        
+        conn.close()
+
+if __name__ == "__main__":
+    # Logger initialisieren
+    logger = setup_logging()
+    
+    # Verzeichnisse erstellen
+    setup_directories()
+    
+    # Datenbank initialisieren
+    setup_database()
+    
+    # Hauptfenster erstellen
+    root = tk.Tk()
+    login_window = LoginWindow(root, lambda user: EmployeeManagementSystem(tk.Tk(), user))
+    root.mainloop()
+
